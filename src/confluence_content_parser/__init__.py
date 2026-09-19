@@ -1,3 +1,4 @@
+from .diagnostics import Diagnostic, ParserLimits, UnknownContentPolicy
 from .document import ConfluenceDocument
 from .nodes import (
     AnchorMacro,
@@ -13,6 +14,8 @@ from .nodes import (
     ExcerptMacro,
     ExpandMacro,
     Fragment,
+    GenericElement,
+    GenericMacro,
     HeadingElement,
     HeadingType,
     Image,
@@ -26,6 +29,8 @@ from .nodes import (
     ListElement,
     ListItem,
     ListType,
+    MacroBodyKind,
+    MacroParameter,
     Node,
     PanelMacro,
     PanelMacroType,
@@ -37,6 +42,8 @@ from .nodes import (
     Table,
     TableCell,
     TableRow,
+    TableSection,
+    TableSectionType,
     TaskListItemStatus,
     TasksReportMacro,
     Text,
@@ -49,17 +56,25 @@ from .nodes import (
     ViewFileMacro,
     ViewPdfMacro,
 )
-from .parser import ConfluenceParser, ParsingError
+from .parser import ConfluenceParser, ElementParser, MacroParser, ParserContext, ParsingError
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 __all__ = [
     "ConfluenceParser",
     "ConfluenceDocument",
     "ParsingError",
+    "Diagnostic",
+    "ParserLimits",
+    "UnknownContentPolicy",
+    "ParserContext",
+    "ElementParser",
+    "MacroParser",
     "Node",
     "ContainerElement",
     "Fragment",
+    "GenericElement",
+    "GenericMacro",
     "LayoutElement",
     "LayoutSection",
     "LayoutCell",
@@ -79,6 +94,8 @@ __all__ = [
     "Table",
     "TableRow",
     "TableCell",
+    "TableSection",
+    "TableSectionType",
     "Emoticon",
     "ResourceIdentifier",
     "ResourceIdentifierType",
@@ -102,6 +119,8 @@ __all__ = [
     "Time",
     "DecisionList",
     "DetailsMacro",
+    "MacroBodyKind",
+    "MacroParameter",
     "DecisionListItem",
     "DecisionListItemState",
     "Text",

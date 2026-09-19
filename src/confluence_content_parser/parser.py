@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 
+from .diagnostics import Diagnostic, ParserLimits, UnknownContentPolicy
 from .document import ConfluenceDocument
 from .nodes import (
     AnchorMacro,
@@ -17,6 +18,8 @@ from .nodes import (
     ExcerptMacro,
     ExpandMacro,
     Fragment,
+    GenericElement,
+    GenericMacro,
     HeadingElement,
     HeadingType,
     Image,
@@ -31,6 +34,8 @@ from .nodes import (
     ListElement,
     ListItem,
     ListType,
+    MacroBodyKind,
+    MacroParameter,
     Node,
     PanelMacro,
     PanelMacroType,
@@ -42,6 +47,8 @@ from .nodes import (
     Table,
     TableCell,
     TableRow,
+    TableSection,
+    TableSectionType,
     TaskListItemStatus,
     TasksReportMacro,
     Text,
@@ -55,13 +62,62 @@ from .nodes import (
     ViewPdfMacro,
 )
 
+type ElementParser = Callable[[ET.Element, ParserContext], Node | None]
+type MacroParser = Callable[[ET.Element, ParserContext], Node | None]
+
 
 class ParsingError(Exception):
     """Raised when parsing fails with diagnostics."""
 
-    def __init__(self, diagnostics: list[str]):
+    def __init__(self, diagnostics: list[str], structured_diagnostics: list[Diagnostic] | None = None):
         self.diagnostics = diagnostics
+        self.structured_diagnostics = structured_diagnostics or []
         super().__init__("; ".join(diagnostics) if diagnostics else "ParsingError")
+
+
+class ParserContext:
+    """Public, limited parser operations available to extension callbacks."""
+
+    def __init__(self, parser: ConfluenceParser) -> None:
+        self._parser = parser
+
+    def parse_children(self, element: ET.Element) -> list[Node]:
+        return self._parser._parse_children(element)
+
+    def parse_element(self, element: ET.Element) -> Node | None:
+        return self._parser._parse_element(element)
+
+    def get_tag_name(self, element: ET.Element) -> str:
+        return self._parser._get_tag_name(element)
+
+    def get_attr(self, element: ET.Element, name: str) -> str | None:
+        return self._parser._get_attr(element, name)
+
+    def find_child(self, element: ET.Element, tag_name: str) -> ET.Element | None:
+        return self._parser._find_child_by_tag(element, tag_name)
+
+    def extract_text(self, element: ET.Element) -> str:
+        return self._parser._extract_text_content(element)
+
+    def iter_parameters(self, element: ET.Element) -> Iterator[ET.Element]:
+        return self._parser._iter_parameters(element)
+
+    def add_diagnostic(
+        self,
+        *,
+        code: str,
+        severity: str,
+        message: str,
+        local_name: str | None = None,
+        namespace: str | None = None,
+    ) -> None:
+        self._parser._add_diagnostic(
+            code=code,
+            severity=severity,
+            message=message,
+            local_name=local_name,
+            namespace=namespace,
+        )
 
 
 class ConfluenceParser:
@@ -71,9 +127,24 @@ class ConfluenceParser:
     NS_RI = "http://www.atlassian.com/schema/confluence/4/ri/"
     NS_AT = "http://www.atlassian.com/schema/confluence/4/at/"
 
-    def __init__(self, *, raise_on_finish: bool = True):
+    def __init__(
+        self,
+        *,
+        raise_on_finish: bool = True,
+        unknown_content: UnknownContentPolicy | str = UnknownContentPolicy.ERROR,
+        element_parsers: Mapping[str, ElementParser] | None = None,
+        macro_parsers: Mapping[str, MacroParser] | None = None,
+        limits: ParserLimits | None = None,
+    ):
         self.diagnostics: list[str] = []
+        self.structured_diagnostics: list[Diagnostic] = []
         self.raise_on_finish = raise_on_finish
+        self.unknown_content = UnknownContentPolicy(unknown_content)
+        self.limits = limits or ParserLimits()
+        self._path: list[str] = []
+        self._is_parsing = False
+        self._custom_element_parsers: dict[str, ElementParser] = {}
+        self._custom_macro_parsers: dict[str, MacroParser] = {}
         self._skipped_elements = {"colgroup", "col", "adf-fallback", "inline-comment-marker"}
         self._element_parsers: dict[str, Callable[[ET.Element], Node | None]] = {
             "macro": self._parse_macro,
@@ -106,6 +177,7 @@ class ConfluenceParser:
             "task": self._parse_list_item,
             "link": self._parse_link,
             "link-body": self._parse_link_body,
+            "plain-text-link-body": self._parse_link_body,
             "a": self._parse_external_link,
             "image": self._parse_image,
             "emoticon": self._parse_emoticon,
@@ -121,6 +193,8 @@ class ConfluenceParser:
             "content-entity": self._parse_resource_identifier,
             "table": self._parse_table,
             "tbody": self._parse_table_body,
+            "thead": self._parse_table_body,
+            "tfoot": self._parse_table_body,
             "tr": self._parse_table_row,
             "th": self._parse_table_cell,
             "td": self._parse_table_cell,
@@ -149,24 +223,141 @@ class ConfluenceParser:
             "excerpt": self._parse_excerpt_macro,
         }
 
+        for name, callback in (element_parsers or {}).items():
+            self.register_element(name, callback)
+        for name, callback in (macro_parsers or {}).items():
+            self.register_macro(name, callback)
+
+    def register_element(self, name: str, callback: ElementParser, *, replace: bool = False) -> None:
+        """Register an element parser on this parser instance."""
+        self._ensure_registration_allowed(name, self._element_parsers, self._custom_element_parsers, replace)
+        self._custom_element_parsers[name] = callback
+
+    def register_macro(self, name: str, callback: MacroParser, *, replace: bool = False) -> None:
+        """Register a macro parser on this parser instance."""
+        self._ensure_registration_allowed(name, self._macro_parsers, self._custom_macro_parsers, replace)
+        self._custom_macro_parsers[name] = callback
+
+    def _ensure_registration_allowed(
+        self,
+        name: str,
+        builtins: Mapping[str, object],
+        custom: Mapping[str, object],
+        replace: bool,
+    ) -> None:
+        if self._is_parsing:
+            raise RuntimeError("Parser registrations cannot change during parse()")
+        if not name:
+            raise ValueError("Parser registration name cannot be empty")
+        if not replace and (name in builtins or name in custom):
+            raise ValueError(f"A parser is already registered for {name!r}")
+
     def parse(self, content: str) -> ConfluenceDocument:
         """Parse Confluence storage-format XML into a ConfluenceDocument."""
         self.diagnostics.clear()
+        self.structured_diagnostics.clear()
+        self._path.clear()
+        self._is_parsing = True
 
         try:
-            content = self._normalize_content(content)
-            root_element = ET.fromstring(content)
-        except ET.ParseError as e:
-            self.diagnostics.append(f"XML parsing failed: {e}")
-            return ConfluenceDocument(metadata={"diagnostics": self.diagnostics})
+            if len(content.encode("utf-8", errors="ignore")) > self.limits.max_xml_bytes:
+                self._add_diagnostic(
+                    code="limit_exceeded",
+                    severity="error",
+                    message=f"XML exceeds max_xml_bytes={self.limits.max_xml_bytes}",
+                )
+                return self._finish(None)
 
-        children = self._parse_children(root_element)
-        root_node = self._consolidate_root(children)
+            try:
+                normalized_content = self._normalize_content(content)
+                root_element = ET.fromstring(normalized_content)
+            except ET.ParseError as exc:
+                self._add_diagnostic(code="xml_parse_error", severity="error", message=f"XML parsing failed: {exc}")
+                return self._finish(None)
 
-        if self.raise_on_finish and self.diagnostics:
-            raise ParsingError(self.diagnostics[:])
+            if not self._validate_limits(root_element):
+                return self._finish(None)
 
-        return ConfluenceDocument(root=root_node, metadata={"diagnostics": self.diagnostics})
+            children = self._parse_children(root_element)
+            return self._finish(self._consolidate_root(children))
+        finally:
+            self._is_parsing = False
+
+    def _finish(self, root: Node | None) -> ConfluenceDocument:
+        metadata = {
+            "diagnostics": self.diagnostics[:],
+            "structured_diagnostics": [
+                diagnostic.model_dump(mode="json") for diagnostic in self.structured_diagnostics
+            ],
+        }
+        if self.raise_on_finish and any(diagnostic.severity == "error" for diagnostic in self.structured_diagnostics):
+            raise ParsingError(self.diagnostics[:], self.structured_diagnostics[:])
+        return ConfluenceDocument(root=root, metadata=metadata)
+
+    def _add_diagnostic(
+        self,
+        *,
+        code: str,
+        severity: str,
+        message: str,
+        local_name: str | None = None,
+        namespace: str | None = None,
+    ) -> None:
+        diagnostic = Diagnostic(
+            code=code,
+            severity=severity,
+            message=message,
+            path="/" + "/".join(self._path) if self._path else None,
+            local_name=local_name,
+            namespace=namespace,
+        )
+        self.structured_diagnostics.append(diagnostic)
+        self.diagnostics.append(diagnostic.legacy)
+
+    def _validate_limits(self, root: ET.Element) -> bool:
+        node_count = 0
+        parameter_count = 0
+        stack: list[tuple[ET.Element, int]] = [(root, 0)]
+        while stack:
+            element, depth = stack.pop()
+            node_count += 1
+            tag = self._get_tag_name(element)
+            if tag == "parameter":
+                parameter_count += 1
+            if tag == "plain-text-body":
+                body_bytes = len(self._extract_text_content(element).encode("utf-8"))
+                if body_bytes > self.limits.max_plain_text_bytes:
+                    self._add_diagnostic(
+                        code="limit_exceeded",
+                        severity="error",
+                        message=f"Plaintext body exceeds max_plain_text_bytes={self.limits.max_plain_text_bytes}",
+                        local_name=tag,
+                    )
+                    return False
+            if depth > self.limits.max_depth:
+                self._add_diagnostic(
+                    code="limit_exceeded",
+                    severity="error",
+                    message=f"XML exceeds max_depth={self.limits.max_depth}",
+                    local_name=tag,
+                )
+                return False
+            if node_count > self.limits.max_nodes:
+                self._add_diagnostic(
+                    code="limit_exceeded",
+                    severity="error",
+                    message=f"XML exceeds max_nodes={self.limits.max_nodes}",
+                )
+                return False
+            if parameter_count > self.limits.max_parameters:
+                self._add_diagnostic(
+                    code="limit_exceeded",
+                    severity="error",
+                    message=f"XML exceeds max_parameters={self.limits.max_parameters}",
+                )
+                return False
+            stack.extend((child, depth + 1) for child in element)
+        return True
 
     def _normalize_content(self, content: str) -> str:
         """Add namespace declarations and entity definitions to ensure proper XML parsing."""
@@ -243,15 +434,50 @@ class ConfluenceParser:
     def _parse_element(self, element: ET.Element) -> Node | None:
         """Parse a single element into appropriate node type."""
         tag = self._get_tag_name(element)
+        self._path.append(tag)
+        try:
+            if tag in self._skipped_elements:
+                return None
 
-        if tag in self._skipped_elements:
-            return None
+            custom_parser = self._custom_element_parsers.get(tag)
+            if custom_parser:
+                return custom_parser(element, ParserContext(self))
 
-        parser = self._element_parsers.get(tag)
-        if parser:
-            return parser(element)
+            parser = self._element_parsers.get(tag)
+            if parser:
+                return parser(element)
 
-        self.diagnostics.append(f"unknown_element:{tag}")
+            return self._handle_unknown_element(element)
+        finally:
+            self._path.pop()
+
+    def _handle_unknown_element(self, element: ET.Element) -> Node | None:
+        local_name = self._get_tag_name(element)
+        namespace = self._get_namespace(element)
+        if self.unknown_content == UnknownContentPolicy.PRESERVE:
+            self._add_diagnostic(
+                code="preserved_unknown_element",
+                severity="warning",
+                message=f"Preserved unknown element {local_name!r}",
+                local_name=local_name,
+                namespace=namespace,
+            )
+            return GenericElement(
+                local_name=local_name,
+                namespace=namespace,
+                attributes=dict(element.attrib),
+                children=self._parse_children(element),
+            )
+
+        severity = "error" if self.unknown_content == UnknownContentPolicy.ERROR else "warning"
+        code = "unknown_element" if severity == "error" else "dropped_unknown_element"
+        self._add_diagnostic(
+            code=code,
+            severity=severity,
+            message=f"Unknown element {local_name!r}",
+            local_name=local_name,
+            namespace=namespace,
+        )
         return None
 
     def _parse_layout(self, element: ET.Element) -> LayoutElement:
@@ -508,9 +734,14 @@ class ConfluenceParser:
             children=self._parse_children(element),
         )
 
-    def _parse_table_body(self, element: ET.Element) -> Fragment:
-        """Parse tbody elements as fragment containers."""
-        return Fragment(children=self._parse_children(element))
+    def _parse_table_body(self, element: ET.Element) -> TableSection:
+        """Parse semantic table section wrappers without losing their rows."""
+        section_types = {
+            "thead": TableSectionType.HEAD,
+            "tbody": TableSectionType.BODY,
+            "tfoot": TableSectionType.FOOT,
+        }
+        return TableSection(type=section_types[self._get_tag_name(element)], children=self._parse_children(element))
 
     def _parse_table_row(self, element: ET.Element) -> TableRow:
         """Parse tr elements."""
@@ -534,24 +765,87 @@ class ConfluenceParser:
     def _parse_macro(self, element: ET.Element) -> Node | None:
         """Parse simple macros by dispatching to specific handlers."""
         name = self._get_attr(element, "name") or ""
+        custom_parser = self._custom_macro_parsers.get(name)
+        if custom_parser:
+            return custom_parser(element, ParserContext(self))
         parser = self._macro_parsers.get(name)
 
         if parser:
             return parser(element)
 
-        self.diagnostics.append(f"unknown_macro:{name}")
-        return None
+        return self._handle_unknown_macro(element, name)
 
     def _parse_structured_macro(self, element: ET.Element) -> Node | None:
         """Parse structured macros by dispatching to specific handlers."""
         name = self._get_attr(element, "name") or ""
+        custom_parser = self._custom_macro_parsers.get(name)
+        if custom_parser:
+            return custom_parser(element, ParserContext(self))
         parser = self._macro_parsers.get(name)
 
         if parser:
             return parser(element)
 
-        self.diagnostics.append(f"unknown_macro:{name}")
+        return self._handle_unknown_macro(element, name)
+
+    def _handle_unknown_macro(self, element: ET.Element, name: str) -> Node | None:
+        if self.unknown_content == UnknownContentPolicy.PRESERVE:
+            self._add_diagnostic(
+                code="preserved_unknown_macro",
+                severity="warning",
+                message=f"Preserved unknown macro {name!r}",
+                local_name=name,
+                namespace=self.NS_AC,
+            )
+            return self._parse_generic_macro(element, name)
+
+        severity = "error" if self.unknown_content == UnknownContentPolicy.ERROR else "warning"
+        code = "unknown_macro" if severity == "error" else "dropped_unknown_macro"
+        self._add_diagnostic(
+            code=code,
+            severity=severity,
+            message=f"Unknown macro {name!r}",
+            local_name=name,
+            namespace=self.NS_AC,
+        )
         return None
+
+    def _parse_generic_macro(self, element: ET.Element, name: str) -> GenericMacro:
+        parameters = [
+            MacroParameter(
+                name=self._get_attr(parameter, "name") or "",
+                value=self._extract_text_content(parameter),
+                children=self._parse_children(parameter),
+            )
+            for parameter in self._iter_parameters(element)
+        ]
+
+        rich_text_body = self._find_child_by_tag(element, "rich-text-body")
+        plain_text_body = self._find_child_by_tag(element, "plain-text-body")
+        if rich_text_body is not None:
+            body_kind = MacroBodyKind.RICH_TEXT
+            children = self._parse_children(rich_text_body)
+            plain_text = None
+        elif plain_text_body is not None:
+            body_kind = MacroBodyKind.PLAIN_TEXT
+            children = []
+            plain_text = self._extract_text_content(plain_text_body)
+        else:
+            body_kind = MacroBodyKind.NONE
+            children = []
+            plain_text = None
+
+        return GenericMacro(
+            name=name,
+            storage_element=self._get_tag_name(element),
+            schema_version=self._get_attr(element, "schema-version"),
+            macro_id=self._get_attr(element, "macro-id"),
+            parameters=parameters,
+            body_kind=body_kind,
+            plain_text_body=plain_text,
+            attributes=dict(element.attrib),
+            children=children,
+        )
 
     def _parse_adf_extension(self, element: ET.Element) -> Node | None:
         """Parse ADF extension elements that can contain various types of content."""
@@ -568,7 +862,13 @@ class ConfluenceParser:
         elif node_type == "decision-item":
             return self._parse_adf_decision_item(adf_node)
 
-        self.diagnostics.append(f"unknown_adf_node_type:{node_type}")
+        self._add_diagnostic(
+            code="unknown_adf_node_type",
+            severity="error",
+            message=f"Unknown ADF node type {node_type!r}",
+            local_name=node_type,
+            namespace=self.NS_AC,
+        )
         return None
 
     def _parse_adf_panel(self, adf_node: ET.Element) -> PanelMacro:
@@ -942,6 +1242,10 @@ class ConfluenceParser:
         """Extract tag name without namespace prefix."""
         tag = element.tag
         return tag.split("}", 1)[1] if "}" in tag else tag
+
+    def _get_namespace(self, element: ET.Element) -> str | None:
+        tag = element.tag
+        return tag[1:].split("}", 1)[0] if tag.startswith("{") and "}" in tag else None
 
     def _get_attr(self, element: ET.Element, attr_name: str) -> str | None:
         """Get attribute value handling multiple namespace variants."""

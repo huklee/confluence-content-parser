@@ -230,7 +230,7 @@ nodes_with_api = find_nodes_with_condition(
 from confluence_content_parser import ConfluenceParser, ParsingError
 import xml.etree.ElementTree as ET
 
-# Default behavior: collect diagnostics without raising errors
+# Tolerant behavior: collect diagnostics without raising errors
 parser = ConfluenceParser(raise_on_finish=False)
 
 try:
@@ -249,6 +249,51 @@ try:
 except ParsingError as e:
     print(f"Parsing failed with diagnostics: {e.diagnostics}")
 ```
+
+`raise_on_finish=True` is the default for backward compatibility.
+
+### Preserving unknown content
+
+Unknown app macros and elements can be retained as typed generic nodes instead
+of being dropped:
+
+```python
+from confluence_content_parser import ConfluenceParser, GenericMacro
+
+parser = ConfluenceParser(unknown_content="preserve")
+document = parser.parse(storage_xml)
+generic_macros = document.find_all(GenericMacro)
+```
+
+Supported policies are `"error"` (the default), `"preserve"`, and `"drop"`.
+Structured diagnostics are available in
+`document.metadata["structured_diagnostics"]`; legacy strings remain in
+`document.metadata["diagnostics"]`.
+
+### Registering app macros
+
+Parser extensions are isolated to one parser instance:
+
+```python
+import xml.etree.ElementTree as ET
+from confluence_content_parser import ConfluenceParser, ParserContext, Text
+
+def parse_widget(element: ET.Element, context: ParserContext) -> Text:
+    return Text(text=context.extract_text(element))
+
+parser = ConfluenceParser(element_parsers={"widget": parse_widget})
+document = parser.parse("<widget>Preserved by an extension</widget>")
+```
+
+Custom callbacks can be passed through `element_parsers` and `macro_parsers`,
+or registered with `register_element()` and `register_macro()` before parsing.
+
+### Resource limits and concurrency
+
+`ParserLimits` controls XML bytes, nesting depth, node count, parameter count,
+and plaintext-body bytes. A parser keeps mutable diagnostics while parsing, so
+do not share one parser instance across concurrent calls; create one instance
+per request or worker.
 
 ### Diagnostics
 
@@ -271,7 +316,7 @@ for diagnostic in diagnostics:
 
 ```bash
 # Clone the repository
-git clone https://github.com/Unificon/confluence-content-parser.git
+git clone https://github.com/huklee/confluence-content-parser.git
 cd confluence-content-parser
 
 # Install dependencies with uv
