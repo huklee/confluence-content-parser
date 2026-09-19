@@ -322,6 +322,13 @@ and plaintext-body bytes. A parser keeps mutable diagnostics while parsing, so
 do not share one parser instance across concurrent calls; create one instance
 per request or worker.
 
+### Table-of-contents configuration
+
+`TocMacro` retains the storage-format `style`, `type`, `minLevel`, `maxLevel`,
+and `printable` options. Consumers can use `toc_type`, `min_level`,
+`max_level`, and `printable` when generating a document-level table of
+contents; heading discovery and presentation remain renderer responsibilities.
+
 ### Diagnostics
 
 The parser collects non-fatal parsing notes (e.g., unknown macros) in `document.metadata["diagnostics"]`.

@@ -731,6 +731,10 @@ class TocMacro(Node):
     """A table of contents macro element."""
 
     style: str | None = None
+    toc_type: str | None = None
+    min_level: int | None = None
+    max_level: int | None = None
+    printable: bool | None = None
     is_block_level: bool = True
 
     def to_text(self) -> str:

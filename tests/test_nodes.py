@@ -937,6 +937,10 @@ class TestMacroElements:
         content = """
         <ac:structured-macro ac:name="toc">
             <ac:parameter ac:name="style">table</ac:parameter>
+            <ac:parameter ac:name="type">list</ac:parameter>
+            <ac:parameter ac:name="minLevel">2</ac:parameter>
+            <ac:parameter ac:name="maxLevel">4</ac:parameter>
+            <ac:parameter ac:name="printable">true</ac:parameter>
         </ac:structured-macro>
         """
         doc = parser.parse(content)
@@ -944,6 +948,11 @@ class TestMacroElements:
         tocs = doc.find_all(TocMacro)
         assert len(tocs) == 1
         assert "Table of Contents" in tocs[0].to_text()
+        assert tocs[0].style == "table"
+        assert tocs[0].toc_type == "list"
+        assert tocs[0].min_level == 2
+        assert tocs[0].max_level == 4
+        assert tocs[0].printable is True
 
     def test_attachments_macro(self):
         """Test attachments macro."""
