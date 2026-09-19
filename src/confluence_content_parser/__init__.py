@@ -1,5 +1,6 @@
 from .diagnostics import Diagnostic, ParserLimits, UnknownContentPolicy
 from .document import ConfluenceDocument
+from .extensions import register_legacy_tabs, register_plaintext_diagrams
 from .nodes import (
     AnchorMacro,
     AttachmentsMacro,
@@ -9,6 +10,7 @@ from .nodes import (
     DecisionListItem,
     DecisionListItemState,
     DetailsMacro,
+    DiagramMacro,
     Emoticon,
     ExcerptIncludeMacro,
     ExcerptMacro,
@@ -44,6 +46,8 @@ from .nodes import (
     TableRow,
     TableSection,
     TableSectionType,
+    TabMacro,
+    TabsMacro,
     TaskListItemStatus,
     TasksReportMacro,
     Text,
@@ -70,6 +74,8 @@ __all__ = [
     "ParserContext",
     "ElementParser",
     "MacroParser",
+    "register_legacy_tabs",
+    "register_plaintext_diagrams",
     "Node",
     "ContainerElement",
     "Fragment",
@@ -119,8 +125,11 @@ __all__ = [
     "Time",
     "DecisionList",
     "DetailsMacro",
+    "DiagramMacro",
     "MacroBodyKind",
     "MacroParameter",
+    "TabMacro",
+    "TabsMacro",
     "DecisionListItem",
     "DecisionListItemState",
     "Text",
