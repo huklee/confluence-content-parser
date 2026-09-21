@@ -1069,6 +1069,10 @@ class ConfluenceParser:
     def _parse_toc_macro(self, element: ET.Element) -> TocMacro:
         """Parse table of contents macro elements."""
         style = None
+        toc_type = None
+        min_level = None
+        max_level = None
+        printable = None
 
         for param in self._iter_parameters(element):
             param_name = self._get_attr(param, "name")
@@ -1076,8 +1080,27 @@ class ConfluenceParser:
 
             if param_name == "style":
                 style = param_value
+            elif param_name == "type":
+                toc_type = param_value
+            elif param_name in {"minLevel", "maxLevel"}:
+                try:
+                    level = min(6, max(1, int(param_value)))
+                except ValueError:
+                    continue
+                if param_name == "minLevel":
+                    min_level = level
+                else:
+                    max_level = level
+            elif param_name == "printable":
+                printable = param_value.lower() == "true"
 
-        return TocMacro(style=style)
+        return TocMacro(
+            style=style,
+            toc_type=toc_type,
+            min_level=min_level,
+            max_level=max_level,
+            printable=printable,
+        )
 
     def _parse_jira_macro(self, element: ET.Element) -> JiraMacro:
         """Parse JIRA macro elements."""
