@@ -288,6 +288,33 @@ document = parser.parse("<widget>Preserved by an extension</widget>")
 Custom callbacks can be passed through `element_parsers` and `macro_parsers`,
 or registered with `register_element()` and `register_macro()` before parsing.
 
+#### Bundled adapters
+
+Legacy nested tabs and opaque plaintext diagrams are available as opt-in
+adapters:
+
+```python
+from confluence_content_parser import (
+    ConfluenceParser,
+    register_legacy_tabs,
+    register_plaintext_diagrams,
+)
+
+parser = ConfluenceParser(unknown_content="preserve")
+register_legacy_tabs(parser)
+register_plaintext_diagrams(parser, names=("plantuml",))
+document = parser.parse(storage_xml)
+```
+
+Diagram adapters preserve source text only. They never execute DSL, access the
+network or filesystem, or produce images.
+
+The completed implementation checklist and its reviewed explainers are
+available in [`TODO_PRD.md`](TODO_PRD.md),
+[`TODO_PRD.html`](TODO_PRD.html), and
+[`TODO_PRD_ELI5.html`](TODO_PRD_ELI5.html). Claim-by-claim verification is
+recorded in [`TODO_PRD_FACT_CHECK.md`](TODO_PRD_FACT_CHECK.md).
+
 ### Resource limits and concurrency
 
 `ParserLimits` controls XML bytes, nesting depth, node count, parameter count,

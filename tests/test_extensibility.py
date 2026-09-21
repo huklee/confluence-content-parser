@@ -4,14 +4,19 @@ import pytest
 
 from confluence_content_parser import (
     ConfluenceParser,
+    DiagramMacro,
     GenericElement,
     GenericMacro,
     MacroBodyKind,
     ParserLimits,
     TableSection,
     TableSectionType,
+    TabMacro,
+    TabsMacro,
     Text,
     UnknownContentPolicy,
+    register_legacy_tabs,
+    register_plaintext_diagrams,
 )
 from confluence_content_parser.parser import ParserContext, ParsingError
 
@@ -168,3 +173,50 @@ def test_resource_limits_raise_structured_errors(limits: ParserLimits, xml: str)
     with pytest.raises(ParsingError) as raised:
         parser.parse(xml)
     assert raised.value.structured_diagnostics[0].code == "limit_exceeded"
+
+
+def test_legacy_tabs_adapter_preserves_order_titles_and_content() -> None:
+    parser = ConfluenceParser()
+    register_legacy_tabs(parser)
+    document = parser.parse(
+        """
+        <ac:structured-macro ac:name="tabs">
+          <ac:parameter ac:name="type">horizontal</ac:parameter>
+          <ac:rich-text-body>
+            <ac:structured-macro ac:name="tab">
+              <ac:parameter ac:name="title">Overview</ac:parameter>
+              <ac:rich-text-body><p>First tab</p></ac:rich-text-body>
+            </ac:structured-macro>
+            <ac:structured-macro ac:name="tab">
+              <ac:parameter ac:name="title">Configuration</ac:parameter>
+              <ac:rich-text-body><p>Second tab</p></ac:rich-text-body>
+            </ac:structured-macro>
+          </ac:rich-text-body>
+        </ac:structured-macro>
+        """
+    )
+    assert isinstance(document.root, TabsMacro)
+    assert document.root.orientation == "horizontal"
+    assert [tab.title for tab in document.root.tabs] == ["Overview", "Configuration"]
+    assert all(isinstance(tab, TabMacro) for tab in document.root.tabs)
+    assert "First tab" in document.text
+    assert "Second tab" in document.text
+
+
+def test_plaintext_diagram_adapter_preserves_source_without_execution() -> None:
+    source = "@startuml\nUser -> Server: request\n@enduml\n"
+    parser = ConfluenceParser()
+    register_plaintext_diagrams(parser)
+    document = parser.parse(
+        f"""
+        <ac:structured-macro ac:name="plantuml">
+          <ac:parameter ac:name="title">Sequence</ac:parameter>
+          <ac:plain-text-body><![CDATA[{source}]]></ac:plain-text-body>
+        </ac:structured-macro>
+        """
+    )
+    assert isinstance(document.root, DiagramMacro)
+    assert document.root.engine == "plantuml"
+    assert document.root.title == "Sequence"
+    assert document.root.source == source
+    assert document.text == f"Sequence\n{source}"
