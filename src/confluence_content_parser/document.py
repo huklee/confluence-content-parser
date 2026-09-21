@@ -24,14 +24,7 @@ class ConfluenceDocument(BaseModel):
         """Get all text content from the document with proper line breaks."""
         if not self.root:
             return ""
-
-        parts = []
-        for child in self.root.get_children():
-            text = child.to_text().strip()
-            if text:
-                parts.append(text)
-
-        return "\n\n".join(parts)
+        return self.root.to_text()
 
     @overload
     def find_all(self) -> list[Node]: ...

@@ -130,6 +130,14 @@ class Fragment(ContainerElement):
     pass
 
 
+class GenericElement(ContainerElement):
+    """Lossless container for a well-formed element without a typed parser."""
+
+    local_name: str
+    namespace: str | None = None
+    attributes: dict[str, str] = Field(default_factory=dict)
+
+
 class LayoutSectionType(Enum):
     """Type of layout section."""
 
@@ -425,6 +433,24 @@ class Table(ContainerElement):
         return "\n".join(lines)
 
 
+class TableSectionType(Enum):
+    """Semantic section of an HTML-like table."""
+
+    HEAD = "head"
+    BODY = "body"
+    FOOT = "foot"
+
+
+class TableSection(Fragment):
+    """A table header, body, or footer section."""
+
+    type: TableSectionType
+    is_block_level: bool = True
+
+    def to_text(self) -> str:
+        return "\n".join(text for child in self.children if (text := child.to_text().strip()))
+
+
 class TableRow(ContainerElement):
     """A table row."""
 
@@ -554,6 +580,74 @@ class PanelMacroType(Enum):
     WARNING = "warning"
     ERROR = "error"
     INFO = "info"
+
+
+class MacroBodyKind(str, Enum):
+    """Storage representation used for a macro body."""
+
+    NONE = "none"
+    RICH_TEXT = "rich-text"
+    PLAIN_TEXT = "plain-text"
+
+
+class MacroParameter(BaseModel):
+    """An ordered macro parameter, including any structured value nodes."""
+
+    name: str
+    value: str | None = None
+    children: list[Node] = Field(default_factory=list)
+
+
+class GenericMacro(ContainerElement):
+    """Lossless representation of an unknown or app-provided macro."""
+
+    name: str
+    storage_element: str
+    schema_version: str | None = None
+    macro_id: str | None = None
+    parameters: list[MacroParameter] = Field(default_factory=list)
+    body_kind: MacroBodyKind = MacroBodyKind.NONE
+    plain_text_body: str | None = None
+    attributes: dict[str, str] = Field(default_factory=dict)
+    is_block_level: bool = True
+
+    def to_text(self) -> str:
+        if self.body_kind == MacroBodyKind.PLAIN_TEXT:
+            return self.plain_text_body or ""
+        content = super().to_text()
+        return content or f"[{self.name} macro]"
+
+
+class DiagramMacro(Node):
+    """Plaintext diagram source preserved without executing a renderer."""
+
+    engine: str
+    macro_name: str
+    title: str | None = None
+    source: str
+    parameters: list[MacroParameter] = Field(default_factory=list)
+    is_block_level: bool = True
+
+    def to_text(self) -> str:
+        return f"{self.title}\n{self.source}" if self.title else self.source
+
+
+class TabMacro(ContainerElement):
+    """One titled tab in a legacy nested tabs macro."""
+
+    title: str
+    is_block_level: bool = True
+
+
+class TabsMacro(ContainerElement):
+    """A legacy tabbed container with tabs retained in source order."""
+
+    orientation: str | None = None
+    is_block_level: bool = True
+
+    @property
+    def tabs(self) -> list[TabMacro]:
+        return [child for child in self.children if isinstance(child, TabMacro)]
 
 
 class PanelMacro(ContainerElement):
